@@ -1458,7 +1458,7 @@
     <button class="btn btn-download" id="picExportAllBtn" type="button" disabled>全ch PNG</button>
     <button class="btn btn-download" id="picExportOutBtn" type="button" disabled>ばらつきch PNG</button>
     <button class="btn btn-download" id="picExportPdfBtn" type="button" disabled title="1ページ目=全ch、2ページ目以降=ばらつきch（4chずつ）">PDF</button>
-    <button class="btn btn-primary" id="picExportBundleBtn" type="button" disabled title="全ch PNG・ばらつきch PNG・PDF・判定CSV をまとめて保存">まとめて保存</button>
+    <button class="btn btn-primary" id="picExportBundleBtn" type="button" disabled title="保存先を選ぶと、その中に「まとめ_実行名」フォルダを作って 全ch PNG・ばらつきch PNG・PDF・判定CSV を保存">📁 フォルダにまとめて保存</button>
     <button class="btn btn-secondary" id="picExportCsvBtn" type="button" disabled>判定CSV</button>
   </div>
 </header>
@@ -1525,6 +1525,8 @@
 <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
 <!-- STEP3 PictureのPDF書き出し用 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- フォルダへ直接書き込めないブラウザ向けのZIPまとめ用 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
@@ -4023,15 +4025,60 @@ function downloadCurrentPhoto(){
   link.click();
 }
 
+// 複数ファイルを1つのフォルダにまとめて保存する（STEP1・STEP3共通）。
+// Chrome/Edge: 保存先フォルダを選ばせ、その中に folderName フォルダを作って直接書き込む。
+// フォルダ選択が使えない/書き込みに失敗した場合は、同じ構成のZIPをダウンロードする。
+// files: [[ファイル名, Blob], ...]  戻り値: {kind:'dir', path} | {kind:'zip', name} | null(キャンセル)
+async function saveBundleToFolder(folderName, files){
+  if (window.showDirectoryPicker) {
+    let parent = null;
+    try { parent = await window.showDirectoryPicker({ id: 'bundleSave', mode: 'readwrite' }); }
+    catch (e) { if (e.name === 'AbortError') return null; }
+    if (parent) {
+      try {
+        const dir = await parent.getDirectoryHandle(folderName, { create: true });
+        for (const [name, blob] of files) {
+          const fh = await dir.getFileHandle(name, { create: true });
+          const w = await fh.createWritable();
+          await w.write(blob); await w.close();
+        }
+        return { kind: 'dir', path: `${parent.name}/${folderName}` };
+      } catch (e) {
+        alert(`フォルダへの書き込みに失敗したためZIPでダウンロードします\n(${e.message})`);
+      }
+    }
+  }
+  if (!window.JSZip) { alert('ZIPライブラリを読み込めませんでした。ネットワーク接続を確認してください。'); return null; }
+  const zip = new JSZip();
+  const dir = zip.folder(folderName);
+  files.forEach(([name, blob]) => dir.file(name, blob));
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${folderName}.zip`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return { kind: 'zip', name: `${folderName}.zip` };
+}
+
+// 写真が複数枚ある場合は1枚ずつダウンロードせず、「ラベル付き写真」フォルダにまとめて保存する。
 async function downloadAllPhotos(){
   const originalFocus = focusedPhotoIndex;
+  const files = [];
+  const used = new Set();
   for (let i = 0; i < photos.length; i++) {
     focusPhoto(i); // reparents the live canvas into photo i's panel and redraws it
-    downloadCurrentPhoto();
-    // ブラウザが「連続ダウンロード」の許可を求めたり取りこぼしたりしないよう、1件ずつ間隔を空ける。
-    await new Promise(r => setTimeout(r, 300));
+    const blob = await new Promise(r => outputCanvas.toBlob(r, 'image/png'));
+    let name = `${originalFileName}_labeled.png`;
+    for (let k = 2; used.has(name); k++) name = `${originalFileName}_labeled_${k}.png`; // 同名写真の上書き防止
+    used.add(name);
+    files.push([name, blob]);
   }
   if (originalFocus >= 0 && originalFocus !== focusedPhotoIndex) focusPhoto(originalFocus);
+  const res = await saveBundleToFolder('ラベル付き写真', files);
+  if (res) setStatus(res.kind === 'dir'
+    ? `<span class="ok">✓ 「${res.path}」に${files.length}枚保存しました</span>`
+    : `<span class="ok">✓ ${res.name} をダウンロードしました（${files.length}枚）</span>`);
 }
 
 // ---------- Re-render on setting change ----------
@@ -6247,9 +6294,13 @@ function sliceCanvas(src, y0, y1){
 // 1ページ目=全chまとめ、2ページ目以降=ばらつきch（1ページ目は棒グラフ+3ch、以降4chずつ）。
 // 各ページは画像と同じ縦横比の用紙サイズにする（matplotlibの bbox_inches="tight" 相当）。
 function exportPdf(){
+  const pdf = buildPdf();
+  if(pdf) pdf.save(`summary_${pic.runName}.pdf`);
+}
+function buildPdf(){
   const {all, out} = pic.canvases;
-  if(!all || !out) return;
-  if(!window.jspdf || !window.jspdf.jsPDF){ alert('PDFライブラリ(jsPDF)を読み込めませんでした。ネットワーク接続を確認してください。'); return; }
+  if(!all || !out) return null;
+  if(!window.jspdf || !window.jspdf.jsPDF){ alert('PDFライブラリ(jsPDF)を読み込めませんでした。ネットワーク接続を確認してください。'); return null; }
   const pages = [all];
   const starts = out.rowStarts || [];
   if(starts.length){
@@ -6268,18 +6319,47 @@ function exportPdf(){
     else pdf.addPage([w, h], orient);
     pdf.addImage(pg.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, w, h);
   }
-  pdf.save(`summary_${pic.runName}.pdf`);
+  return pdf;
 }
 function exportCsv(){
+  const b = buildCsvBlob();
+  if(b) download(b, `overpotential_table_${pic.runName}.csv`);
+}
+function buildCsvBlob(){
   const R = pic.result;
-  if(!R) return;
+  if(!R) return null;
   const q = s => /[",\n]/.test(s) ? `"${String(s).replace(/"/g, '""')}"` : s;
   const r1 = v => Number.isFinite(v) ? (Math.round(v * 10) / 10).toString() : '';
   const head = ['Ch', 'COM', ...R.cyc, 'avg', 'sd', 'flag', 'reason', 'note'];
   const lines = [head.join(',')].concat(R.rows.map(r => [
     r.ch, r.com, ...r.cycVals.map(r1), r1(r.avg), r1(r.sd), r.flag ? 'True' : 'False', q(r.reasons.join(' / ')), q(r.note)
   ].join(',')));
-  download(new Blob(['﻿' + lines.join('\r\n') + '\r\n'], {type: 'text/csv'}), `overpotential_table_${pic.runName}.csv`);
+  return new Blob(['﻿' + lines.join('\r\n') + '\r\n'], {type: 'text/csv'});
+}
+
+/* ---------------- まとめて保存（フォルダ or ZIP） ---------------- */
+const canvasBlob = c => new Promise(res => c.toBlob(res, 'image/png'));
+async function buildBundleFiles(){
+  const files = [
+    ['summary_all.png', await canvasBlob(pic.canvases.all)],
+    ['summary_outliers.png', await canvasBlob(pic.canvases.out)],
+    ['overpotential_table.csv', buildCsvBlob()],
+  ];
+  const pdf = buildPdf();
+  if(pdf) files.push(['summary.pdf', pdf.output('blob')]);
+  return files;
+}
+// 選んだフォルダの中に「まとめ_<実行名>」フォルダを作って保存（STEP1と共通の saveBundleToFolder）
+async function exportBundle(){
+  if(!pic.canvases.all) return;
+  const folderName = `まとめ_${pic.runName}`;
+  const files = await buildBundleFiles();
+  const res = await saveBundleToFolder(folderName, files);
+  if(!res) return;
+  const list = files.map(f => esc(f[0])).join(' / ');
+  setPicStatus(res.kind === 'dir'
+    ? `<span class="ok">✓ 「${esc(res.path)}」に${files.length}ファイルを保存しました</span>\n${list}`
+    : `<span class="ok">✓ ${esc(res.name)} をダウンロードしました</span>\n${list}`);
 }
 
 /* ---------------- イベント ---------------- */
@@ -6303,15 +6383,7 @@ picExportAllBtn.addEventListener('click', () => exportPng('all'));
 picExportOutBtn.addEventListener('click', () => exportPng('out'));
 picExportCsvBtn.addEventListener('click', exportCsv);
 $('picExportPdfBtn').addEventListener('click', exportPdf);
-// ブラウザが連続ダウンロードを取りこぼさないよう少し間隔をあけて順に保存する
-// （Chromeでは初回だけ「複数ファイルのダウンロードを許可」の確認が出ることがある）
-$('picExportBundleBtn').addEventListener('click', async () => {
-  const wait = ms => new Promise(r => setTimeout(r, ms));
-  exportPng('all'); await wait(400);
-  exportPng('out'); await wait(400);
-  exportPdf(); await wait(400);
-  exportCsv();
-});
+$('picExportBundleBtn').addEventListener('click', exportBundle);
 $('picViewAllBtn').addEventListener('click', () => showView('all'));
 $('picViewOutBtn').addEventListener('click', () => showView('out'));
 $('picCondPerCell').addEventListener('change', e => { e.target.dataset.touched = '1'; });
