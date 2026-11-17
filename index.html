@@ -1456,9 +1456,9 @@
   <div class="header-right">
     <button class="btn btn-primary" id="picBuildBtn" type="button" disabled>まとめを生成</button>
     <button class="btn btn-download" id="picExportAllBtn" type="button" disabled>全ch PNG</button>
-    <button class="btn btn-download" id="picExportOutBtn" type="button" disabled>ばらつきch PNG</button>
-    <button class="btn btn-download" id="picExportPdfBtn" type="button" disabled title="1ページ目=全ch、2ページ目以降=ばらつきch（4chずつ）">PDF</button>
-    <button class="btn btn-primary" id="picExportBundleBtn" type="button" disabled title="保存先を選ぶと、その中に「まとめ_実行名」フォルダを作って 全ch PNG・ばらつきch PNG・PDF・判定CSV を保存">📁 フォルダにまとめて保存</button>
+    <button class="btn btn-download" id="picExportCvBtn" type="button" disabled>CV図 PNG</button>
+    <button class="btn btn-download" id="picExportPdfBtn" type="button" disabled title="全chまとめ と CV図 を1つのPDFに">PDF</button>
+    <button class="btn btn-primary" id="picExportBundleBtn" type="button" disabled title="保存先を選ぶと、その中に「まとめ_実行名」フォルダを作って 全ch・CV図 の PNG と PDF、判定CSV を保存">📁 フォルダにまとめて保存</button>
     <button class="btn btn-secondary" id="picExportCsvBtn" type="button" disabled>判定CSV</button>
   </div>
 </header>
@@ -1471,7 +1471,7 @@
         PyCharmMiscProject/output/<b>20261104_163420</b> のような<br>実行フォルダをここにドラッグ<br>または <u>クリックして選択</u>
         <input type="file" id="picFolderInput" webkitdirectory multiple>
       </div>
-      <p class="sem-hint">overpotential_*.csv が必須です。processed_*.csv と debug_*.csv があれば、ばらつきchのCV波形も描きます（無ければ debug/Ch*/all_cv.png を使います）。</p>
+      <p class="sem-hint">overpotential_*.csv が必須です。processed_*.csv と debug_*.csv があれば、全chのCV図を描きます（無ければ debug/Ch*/all_cv.png を使います）。</p>
       <select id="picRunSelect" class="pic-run-select" style="display:none"></select>
       <div class="sem-status-line" id="picFolderStatus"></div>
     </div>
@@ -1502,7 +1502,7 @@
 
     <div class="sem-panel">
       <h3>⑤ ch一覧・所見メモ</h3>
-      <p class="sem-hint" style="margin-bottom:8px">所見はばらつきchのページに載ります（ブラウザ内に実行フォルダ名ごとに保存）。</p>
+      <p class="sem-hint" style="margin-bottom:8px">所見はCV図ページの各chの下に載ります（ブラウザ内に実行フォルダ名ごとに保存）。</p>
       <div id="picChTableWrap"><p class="sem-field-hint">まとめ生成後に表示されます</p></div>
     </div>
   </aside>
@@ -1510,7 +1510,7 @@
   <main class="sem-canvas-area">
     <div class="pic-view-tabs">
       <button type="button" class="tab-btn active" id="picViewAllBtn">全チャンネル</button>
-      <button type="button" class="tab-btn" id="picViewOutBtn">ばらつきch</button>
+      <button type="button" class="tab-btn" id="picViewCvBtn">CV図（全ch）</button>
     </div>
     <div id="picPreview" class="pic-preview">
       <div class="sem-emptyState">① STEP1 Channel Labelerで電析後の写真にCh番号を割り当てる<br>② 左にoutputフォルダを読み込む<br>③「まとめを生成」</div>
@@ -5525,7 +5525,7 @@ const $ = id => document.getElementById(id);
 const picStatusBox = $('picStatusBox');
 const picBuildBtn = $('picBuildBtn');
 const picExportAllBtn = $('picExportAllBtn');
-const picExportOutBtn = $('picExportOutBtn');
+const picExportCvBtn = $('picExportCvBtn');
 const picExportCsvBtn = $('picExportCsvBtn');
 const picPreview = $('picPreview');
 const picRunSelect = $('picRunSelect');
@@ -5679,7 +5679,7 @@ async function selectRun(dir){
 
   const extras = [pic.proc ? 'processed' : null, pic.dbg ? 'debug' : null, run.cvPngs.size ? `all_cv.png×${run.cvPngs.size}` : null].filter(Boolean);
   $('picFolderStatus').innerHTML = `<span class="ok">✓ ${esc(pic.runName)}</span>：${pic.op.rows.length}ch / ${pic.op.cycles.length || '平均のみ'}${pic.op.cycles.length ? 'サイクル' : ''}` +
-    (extras.length ? `<br>CV波形: ${extras.join(', ')}` : '<br>CV波形データなし（ばらつきchページはCVなし）');
+    (extras.length ? `<br>CV波形: ${extras.join(', ')}` : '<br>CV波形データなし（CV図ページは写真と数値のみ）');
 
   renderCycleChecks();
   // タイトル・条件はユーザーが書き換えていなければ自動で入れ直す
@@ -5761,7 +5761,8 @@ function renderCycleChecks(){
   const cyc = pic.op.cycles;
   if(!cyc.length){ row.innerHTML = '<span class="sem-hint">サイクル別の列がないため average / std をそのまま使います</span>'; return; }
   const saved = lsGet('picCycles:' + pic.runName);
-  const on = saved ? new Set(JSON.parse(saved)) : new Set(cyc);
+  // 既定では cycle1 を除外（cycle2以降で過電圧を算出する運用）。2サイクル以上ある場合のみ。
+  const on = saved ? new Set(JSON.parse(saved)) : new Set(cyc.length > 1 ? cyc.filter(c => !/^cycle1$/i.test(c)) : cyc);
   row.innerHTML = cyc.map(c => `<label><input type="checkbox" value="${c}" ${on.has(c) ? 'checked' : ''}> ${c}</label>`).join('');
   row.querySelectorAll('input').forEach(inp => inp.addEventListener('change', () => {
     lsSet('picCycles:' + pic.runName, JSON.stringify(selectedCycles()));
@@ -6019,8 +6020,10 @@ function viridis(t){
 // processed/debug csv から CV を描く（作業場2の cv_plot と同じ: y=-5..10, j_target線, 採用点）
 function drawCv(ctx, R, r, x, y, w, h, cvImg){
   ctx.fillStyle = '#fff'; ctx.fillRect(x, y, w, h);
+  text(ctx, `Ch${r.ch}${r.com ? ` (${r.com})` : ''}`, x + w / 2, y + 4, {size: 17, weight: 'bold', align: 'center', color: r.flag ? RED : INK});
   const E = pic.proc && pic.proc.E, J = pic.proc && pic.proc.cols.get(r.sample);
   if(!E || !J){
+    y += 26; h -= 26;
     if(cvImg) drawContain(ctx, cvImg, x, y, w, h);
     else { text(ctx, 'CV波形データなし', x + w / 2, y + h / 2, {size: 14, align: 'center', base: 'middle', color: '#999'}); }
     return;
@@ -6043,7 +6046,6 @@ function drawCv(ctx, R, r, x, y, w, h, cvImg){
   const px = x + L, py = y + T, pw = w - L - Rr, ph = h - T - B;
   const X = v => px + (v - xmin) / (xmax - xmin || 1) * pw;
   const Y = v => py + ph - (v - ymin) / (ymax - ymin) * ph;
-  text(ctx, `CV Ch${r.ch} (${r.com})`, x + w / 2, y + 6, {size: 14, align: 'center'});
   // grid
   ctx.strokeStyle = '#e5e5e5'; ctx.lineWidth = 1;
   const xs = niceStep(xmax - xmin, 6);
@@ -6056,7 +6058,8 @@ function drawCv(ctx, R, r, x, y, w, h, cvImg){
     ctx.beginPath(); ctx.moveTo(px, Y(v)); ctx.lineTo(px + pw, Y(v)); ctx.stroke();
     text(ctx, String(v), px - 6, Y(v), {size: 11, align: 'right', base: 'middle'});
   }
-  ctx.strokeStyle = '#333'; ctx.strokeRect(px, py, pw, ph);
+  // ばらつきchは枠を赤く太くする
+  ctx.strokeStyle = r.flag ? RED : '#333'; ctx.lineWidth = r.flag ? 3 : 1; ctx.strokeRect(px, py, pw, ph); ctx.lineWidth = 1;
   text(ctx, 'Potential (V vs. RHE)', px + pw / 2, y + h - 18, {size: 12, align: 'center'});
   ctx.save(); ctx.translate(x + 14, py + ph / 2); ctx.rotate(-Math.PI / 2);
   text(ctx, 'j (mA/cm²)', 0, 0, {size: 12, align: 'center', base: 'middle'}); ctx.restore();
@@ -6096,7 +6099,8 @@ function drawCv(ctx, R, r, x, y, w, h, cvImg){
 
 function statLine(R){
   if(!Number.isFinite(R.med)) return '正常chがないため中央値を計算できません';
-  return `正常ch中央値 ${R.med.toFixed(0)} mV, 許容範囲 ${R.lo.toFixed(0)}–${R.hi.toFixed(0)} mV (中央値±${R.devK}×MAD換算σ)` +
+  const used = R.NC ? `η は ${R.cyc.join(', ')} の平均 / ` : '';
+  return `${used}正常ch中央値 ${R.med.toFixed(0)} mV, 許容範囲 ${R.lo.toFixed(0)}–${R.hi.toFixed(0)} mV (中央値±${R.devK}×MAD換算σ)` +
     (R.NC ? `, サイクル間σ>${R.cycMax} mV も要注意` : '');
 }
 function etaLine(R, r){
@@ -6153,70 +6157,74 @@ function renderAll(R, crops, map){
   return c;
 }
 
-/* ---------------- ばらつきchのみ ---------------- */
-async function renderOutliers(R, crops){
-  const out = R.rows.filter(r => r.flag);
-  // 比較用に中央値に最も近い正常chを1つ参照として載せる
-  const normal = R.rows.filter(r => !r.flag && Number.isFinite(r.avg));
-  const ref = normal.sort((a, b) => Math.abs(a.avg - R.med) - Math.abs(b.avg - R.med))[0];
-  const items = out.map(r => ({r, isRef: false})).concat(ref ? [{r: ref, isRef: true}] : []);
+/* ---------------- 全chのCV図まとめ ---------------- */
+// 1chにつき「電析後写真 | CV図」のカードを作り、4列のグリッドに並べる。
+// カードの下に η（各サイクル）・平均±σ・判定理由・所見を書く。ばらつきchは赤（枠・タイトル・文字）。
+const CV_COLS = 4;
+async function renderCvAll(R, crops){
+  const PAD = 30, GX = 28, GY = 30;
+  const PHW = 140, CVW = 440, PLOT_H = 320, CARD_W = PHW + 10 + CVW;
+  const W = PAD * 2 + CV_COLS * CARD_W + (CV_COLS - 1) * GX;
+  const LH = 19, NOTE_MAX = 3;
 
-  const W = 1800, PAD = 30, ROW_H = 420, GAP = 24;
   const m = document.createElement('canvas').getContext('2d');
+  const linesOf = r => {
+    const ls = [{s: R.NC ? `η: ${R.cyc.map((cn, k) => fmt(r.cycVals[k])).join(' / ')} mV` : `η: ${fmt(r.avg)} mV`},
+                {s: `平均 ${fmt(r.avg)} ± ${fmt(r.sd)} mV`}];
+    r.reasons.forEach(s => ls.push({s: '⚠ ' + s}));
+    if(r.note) wrapLines(m, '所見: ' + r.note, CARD_W, `13px ${FONT}`).slice(0, NOTE_MAX).forEach(s => ls.push({s, note: true}));
+    return ls;
+  };
+  const cardLines = R.rows.map(linesOf);
+  const nRows = Math.ceil(R.rows.length / CV_COLS);
+  // グリッドの行ごとに、その行で一番行数の多いカードに高さを合わせる
+  const rowH = [];
+  for(let g = 0; g < nRows; g++){
+    const n = Math.max(2, ...cardLines.slice(g * CV_COLS, (g + 1) * CV_COLS).map(l => l.length));
+    rowH.push(PLOT_H + 8 + n * LH + 6);
+  }
   const condLines = wrapLines(m, $('picCond').value, W - PAD * 2, `20px ${FONT}`).filter(Boolean);
   const TITLE_H = 44 + condLines.length * 28 + 12;
   const CHART_H = 360;
-  const H = PAD + TITLE_H + CHART_H + 24 + (items.length ? items.length * (ROW_H + GAP) : 80) + PAD;
+  const H = PAD + TITLE_H + CHART_H + 30 + rowH.reduce((a, b) => a + b + GY, 0) + PAD;
+
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
   let y = PAD;
   const date = (pic.runName.match(/^(\d{8})/) || [])[1] || pic.runName;
-  text(ctx, `${date} ばらつきが見られたチャンネル（${out.length}ch）`, W / 2, y, {size: 28, weight: 'bold', align: 'center'});
+  text(ctx, `${date} CV・電析後 まとめ（全チャンネル）`, W / 2, y, {size: 30, weight: 'bold', align: 'center'});
   y += 44;
   condLines.forEach(l => { text(ctx, l, W / 2, y, {size: 20, align: 'center', color: '#222'}); y += 28; });
   y += 12;
-  drawBarChart(ctx, R, PAD, y, W - PAD * 2, CHART_H, statLine(R));
-  y += CHART_H + 24;
-  if(!items.length || !out.length){
-    text(ctx, 'ばらつきのあるチャンネルはありませんでした', W / 2, y + 20, {size: 22, align: 'center', color: '#2a7'});
-  }
-  const PHW = 230, CVW = 760, TX = PAD + PHW + 24 + CVW + 30, TW = W - PAD - TX;
-  c.rowStarts = []; // PDFでページ分割するときの切れ目（各chの行の開始y）
-  for(const {r, isRef} of (out.length ? items : [])){
-    c.rowStarts.push(y - GAP / 2);
-    const color = isRef ? INK : RED;
-    ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(PAD, y - GAP / 2); ctx.lineTo(W - PAD, y - GAP / 2); ctx.stroke();
-    text(ctx, '電析後', PAD + PHW / 2, y, {size: 13, align: 'center', color: '#444'});
-    drawContain(ctx, crops.get(r.ch), PAD, y + 20, PHW, ROW_H - 20);
-    strokeBox(ctx, PAD, y + 20, PHW, ROW_H - 20, isRef ? '#333' : RED, isRef ? 1 : 3);
-    let cvImg = null;
-    if(!(pic.proc && pic.proc.cols.get(r.sample)) && pic.cvPngs && pic.cvPngs.get(r.ch)){
-      try { cvImg = await loadImg(URL.createObjectURL(pic.cvPngs.get(r.ch))); } catch(e){}
-    }
-    drawCv(ctx, R, r, PAD + PHW + 24, y, CVW, ROW_H, cvImg);
-    let ty = y + 4;
-    text(ctx, `Ch${r.ch}${r.com ? ` (${r.com})` : ''}` + (isRef ? '  ［参照：正常ch］' : ''), TX, ty, {size: 26, weight: 'bold', color});
-    ty += 42;
-    const body = [];
-    if(R.NC) R.cyc.forEach((cn, k) => body.push(`${cn}: ${fmt(r.cycVals[k])} mV`));
-    body.push(`平均: ${fmt(r.avg)} ± ${fmt(r.sd)} mV`);
-    if(Number.isFinite(R.med)) body.push(`(正常ch中央値 ${R.med.toFixed(0)} mV)`);
-    body.forEach(l => { text(ctx, l, TX, ty, {size: 19, color}); ty += 27; });
-    if(!isRef){
-      ty += 10;
-      text(ctx, '判定:', TX, ty, {size: 19, weight: 'bold', color}); ty += 27;
-      r.reasons.forEach(s => {
-        wrapLines(ctx, '・' + s, TW, `19px ${FONT}`).forEach(l => { text(ctx, l, TX, ty, {size: 19, color}); ty += 27; });
-      });
-      if(r.note){
-        ty += 10;
-        text(ctx, '所見:', TX, ty, {size: 19, weight: 'bold', color}); ty += 27;
-        wrapLines(ctx, r.note, TW, `18px ${FONT}`).forEach(l => { if(ty < y + ROW_H - 10){ text(ctx, l, TX, ty, {size: 18, color}); ty += 25; } });
+  drawBarChart(ctx, R, PAD, y, W - PAD * 2, CHART_H, statLine(R) + '  （赤＝ばらつきあり）');
+  y += CHART_H + 30;
+
+  c.rowStarts = []; // PDFでページ分割するときの切れ目（グリッド各行の開始y）
+  for(let g = 0; g < nRows; g++){
+    c.rowStarts.push(y - GY / 2);
+    if(g > 0){ ctx.strokeStyle = '#e2e2e2'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(PAD, y - GY / 2); ctx.lineTo(W - PAD, y - GY / 2); ctx.stroke(); }
+    for(let k = 0; k < CV_COLS; k++){
+      const i = g * CV_COLS + k;
+      const r = R.rows[i];
+      if(!r) break;
+      const x = PAD + k * (CARD_W + GX);
+      const col = r.flag ? RED : '#333';
+      drawContain(ctx, crops.get(r.ch), x, y + 30, PHW, PLOT_H - 30);
+      strokeBox(ctx, x, y + 30, PHW, PLOT_H - 30, col, r.flag ? 3 : 1);
+      let cvImg = null;
+      if(!(pic.proc && pic.proc.cols.get(r.sample)) && pic.cvPngs && pic.cvPngs.get(r.ch)){
+        try { cvImg = await loadImg(URL.createObjectURL(pic.cvPngs.get(r.ch))); } catch(e){}
       }
+      drawCv(ctx, R, r, x + PHW + 10, y, CVW, PLOT_H, cvImg);
+      let ty = y + PLOT_H + 8;
+      cardLines[i].forEach(l => {
+        text(ctx, l.s, x + 4, ty, {size: 13, color: r.flag ? RED : (l.note ? '#555' : '#333')});
+        ty += LH;
+      });
     }
-    y += ROW_H + GAP;
+    y += rowH[g] + GY;
   }
   return c;
 }
@@ -6247,14 +6255,14 @@ async function build(){
   const crops = new Map();
   R.rows.forEach(r => crops.set(r.ch, cropCanvas(map.get(r.ch))));
   const all = renderAll(R, crops, map);
-  const outC = await renderOutliers(R, crops);
+  const cvC = await renderCvAll(R, crops);
   if(seq !== buildSeq) return; // 途中でまた生成が走った
   pic.result = R;
-  pic.canvases = {all, out: outC};
+  pic.canvases = {all, cv: cvC};
   showView(pic.view);
   // テキスト入力中にサイドバー表を作り直すとフォーカスが外れるので、表の中を編集中なら再描画しない
   if(!$('picChTableWrap').contains(document.activeElement)) renderChTable(R);
-  picExportAllBtn.disabled = picExportOutBtn.disabled = picExportCsvBtn.disabled = $('picExportPdfBtn').disabled = $('picExportBundleBtn').disabled = false;
+  picExportAllBtn.disabled = picExportCvBtn.disabled = picExportCsvBtn.disabled = $('picExportPdfBtn').disabled = $('picExportBundleBtn').disabled = false;
   const nf = R.rows.filter(r => r.flag).length;
   const nPhoto = R.rows.filter(r => crops.get(r.ch)).length;
   setPicStatus(`<span class="ok">✓ まとめを生成しました（${esc(pic.runName)}）</span>\n写真 ${nPhoto}/${R.rows.length}ch・ばらつき ${nf}ch` +
@@ -6264,7 +6272,7 @@ async function build(){
 function showView(v){
   pic.view = v;
   $('picViewAllBtn').classList.toggle('active', v === 'all');
-  $('picViewOutBtn').classList.toggle('active', v === 'out');
+  $('picViewCvBtn').classList.toggle('active', v === 'cv');
   const c = pic.canvases[v];
   picPreview.innerHTML = '';
   if(c) picPreview.appendChild(c);
@@ -6281,7 +6289,7 @@ function download(blob, name){
 function exportPng(which){
   const c = pic.canvases[which];
   if(!c) return;
-  c.toBlob(b => download(b, `${which === 'all' ? 'summary_all' : 'summary_outliers'}_${pic.runName}.png`), 'image/png');
+  c.toBlob(b => download(b, `summary_${which}_${pic.runName}.png`), 'image/png');
 }
 function sliceCanvas(src, y0, y1){
   const c = document.createElement('canvas');
@@ -6291,25 +6299,28 @@ function sliceCanvas(src, y0, y1){
   ctx.drawImage(src, 0, y0, src.width, c.height, 0, 0, c.width, c.height);
   return c;
 }
-// 1ページ目=全chまとめ、2ページ目以降=ばらつきch（1ページ目は棒グラフ+3ch、以降4chずつ）。
+// PDFのページ構成。全chまとめは1ページ。CV図は1ページ目=棒グラフ+グリッド2行、以降3行ずつ。
 // 各ページは画像と同じ縦横比の用紙サイズにする（matplotlibの bbox_inches="tight" 相当）。
+function pdfPagesOf(which){
+  const c = pic.canvases[which];
+  if(!c) return [];
+  if(which !== 'cv') return [c];
+  const starts = c.rowStarts || [];
+  if(!starts.length) return [c];
+  const firstN = Math.min(2, starts.length), perPage = 3;
+  const cut = i => i < starts.length ? starts[i] : c.height;
+  const pages = [sliceCanvas(c, 0, cut(firstN))];
+  for(let i = firstN; i < starts.length; i += perPage) pages.push(sliceCanvas(c, cut(i), cut(i + perPage)));
+  return pages;
+}
+// ヘッダーの「PDF」ボタン: 全ch と CV図 を1つのPDFにまとめてダウンロード
 function exportPdf(){
-  const pdf = buildPdf();
+  const pdf = buildPdf([...pdfPagesOf('all'), ...pdfPagesOf('cv')]);
   if(pdf) pdf.save(`summary_${pic.runName}.pdf`);
 }
-function buildPdf(){
-  const {all, out} = pic.canvases;
-  if(!all || !out) return null;
+function buildPdf(pages){
+  if(!pages.length) return null;
   if(!window.jspdf || !window.jspdf.jsPDF){ alert('PDFライブラリ(jsPDF)を読み込めませんでした。ネットワーク接続を確認してください。'); return null; }
-  const pages = [all];
-  const starts = out.rowStarts || [];
-  if(starts.length){
-    // 参照chを含めて4行以内なら1ページに収める（参照chだけが次ページに分かれないように）
-    const firstN = starts.length <= 4 ? starts.length : 3, perPage = 4;
-    const cut = i => i < starts.length ? starts[i] : out.height;
-    pages.push(sliceCanvas(out, 0, cut(firstN)));
-    for(let i = firstN; i < starts.length; i += perPage) pages.push(sliceCanvas(out, cut(i), cut(i + perPage)));
-  } else pages.push(out);
   const PT = 0.75; // 96dpi px -> pt
   let pdf = null;
   for(const pg of pages){
@@ -6339,14 +6350,15 @@ function buildCsvBlob(){
 
 /* ---------------- まとめて保存（フォルダ or ZIP） ---------------- */
 const canvasBlob = c => new Promise(res => c.toBlob(res, 'image/png'));
+// フォルダには 全ch・CV図 それぞれの PNG と PDF、判定CSV を入れる
 async function buildBundleFiles(){
-  const files = [
-    ['summary_all.png', await canvasBlob(pic.canvases.all)],
-    ['summary_outliers.png', await canvasBlob(pic.canvases.out)],
-    ['overpotential_table.csv', buildCsvBlob()],
-  ];
-  const pdf = buildPdf();
-  if(pdf) files.push(['summary.pdf', pdf.output('blob')]);
+  const files = [];
+  for(const which of ['all', 'cv']){
+    files.push([`summary_${which}.png`, await canvasBlob(pic.canvases[which])]);
+    const pdf = buildPdf(pdfPagesOf(which));
+    if(pdf) files.push([`summary_${which}.pdf`, pdf.output('blob')]);
+  }
+  files.push(['overpotential_table.csv', buildCsvBlob()]);
   return files;
 }
 // 選んだフォルダの中に「まとめ_<実行名>」フォルダを作って保存（STEP1と共通の saveBundleToFolder）
@@ -6380,12 +6392,12 @@ finput.addEventListener('change', async () => {
 picRunSelect.addEventListener('change', async () => { await selectRun(picRunSelect.value); if(pic.result) build(); });
 picBuildBtn.addEventListener('click', build);
 picExportAllBtn.addEventListener('click', () => exportPng('all'));
-picExportOutBtn.addEventListener('click', () => exportPng('out'));
+picExportCvBtn.addEventListener('click', () => exportPng('cv'));
 picExportCsvBtn.addEventListener('click', exportCsv);
 $('picExportPdfBtn').addEventListener('click', exportPdf);
 $('picExportBundleBtn').addEventListener('click', exportBundle);
 $('picViewAllBtn').addEventListener('click', () => showView('all'));
-$('picViewOutBtn').addEventListener('click', () => showView('out'));
+$('picViewCvBtn').addEventListener('click', () => showView('cv'));
 $('picCondPerCell').addEventListener('change', e => { e.target.dataset.touched = '1'; });
 ['picDevK', 'picCycStdMax', 'picCols', 'picPad', 'picZoom', 'picCondPerCell'].forEach(id =>
   $(id).addEventListener('change', () => { if(pic.result) build(); }));
