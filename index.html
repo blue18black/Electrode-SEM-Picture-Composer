@@ -1158,9 +1158,9 @@
           <div class="drop-zone" id="dropZone">
             <div class="icon">📁</div>
             <strong>クリックまたはドロップ</strong>
-            <p>JPG / PNG / WEBP</p>
+            <p>JPG / PNG / WEBP（複数枚まとめてOK・ファイル名順に並びます）</p>
           </div>
-          <input type="file" id="fileInput" accept="image/*">
+          <input type="file" id="fileInput" accept="image/*" multiple>
         </div>
         <div id="editImageView" style="visibility:hidden;">
           <div class="legend-btn-row">
@@ -2011,24 +2011,46 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-ove
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file && file.type.startsWith('image/')) loadImage(file);
+  loadImages(e.dataTransfer.files);
 });
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) loadImage(fileInput.files[0]);
+  loadImages(fileInput.files);
+  fileInput.value = ''; // 同じファイルを続けて選び直しても change が発火するように
 });
 
+// 複数枚をまとめて選択/ドロップした場合は、ファイル名順（撮影日時のファイル名なら撮影順）に
+// 1枚ずつ順番に追加する。順番に await するのは、追加順がそのまま Ch範囲の割り当て順
+// （1枚目=Ch1-8, 2枚目=Ch9-16 …）になるため。
+let imageLoadQueue = Promise.resolve();
+function loadImages(fileList) {
+  const files = Array.from(fileList || [])
+    .filter(f => f.type.startsWith('image/'))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }));
+  if (!files.length) return;
+  imageLoadQueue = imageLoadQueue.then(async () => {
+    for (const f of files) {
+      try { await loadImage(f); } catch (err) { console.error(err); }
+    }
+    if (files.length > 1) setStatus(`<span class="ok">✓ 写真を${files.length}枚読み込みました（ファイル名順）</span>`);
+  });
+}
+
 function loadImage(file) {
-  const reader = new FileReader();
-  reader.onload = ev => {
-    const img = new Image();
-    img.onload = () => {
-      const fileName = file.name.replace(/\.[^/.]+$/, '') || 'image';
-      addPhotoSlot(img, fileName);
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = () => {
+        const fileName = file.name.replace(/\.[^/.]+$/, '') || 'image';
+        addPhotoSlot(img, fileName);
+        resolve();
+      };
+      img.onerror = reject;
+      img.src = ev.target.result;
     };
-    img.src = ev.target.result;
-  };
-  reader.readAsDataURL(file);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 // "最小コンポーネント幅/高さ" is hard to tune by hand and its right value depends
@@ -4082,9 +4104,13 @@ async function downloadAllPhotos(){
 }
 
 // ---------- Re-render on setting change ----------
+// フォントサイズ・色・ラベル位置は全写真共通の設定なので、フォーカス中の写真だけでなく
+// 読み込み済みの全ての写真に反映する（他の写真のパネルは古い設定のスナップショットのままになるため、
+// 1枚ずつフォーカスし直して描き直す）。
 ['labelColor','fontSize','legendFontSize','legendColor','labelPosition'].forEach(id => {
   document.getElementById(id).addEventListener('change', () => {
     if (detectedComponents.length > 0) drawLabels(detectedComponents);
+    if (photos.length > 1) refreshAllPanelSnapshots();
   });
 });
 
