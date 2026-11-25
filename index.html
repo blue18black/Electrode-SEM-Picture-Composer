@@ -1065,6 +1065,8 @@
   .pic-ch-table td { padding: 4px; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--text); }
   .pic-ch-table tr.flagged td:first-child, .pic-ch-table tr.flagged td:nth-child(2) { color: #ff6b6b; font-weight: 700; }
   .pic-ch-table .pic-reason { font-size: 11px; color: #ff9b9b; margin-top: 2px; }
+  .pic-ch-table tr.good td:first-child, .pic-ch-table tr.good td:nth-child(2) { color: #5fd38d; font-weight: 700; }
+  .pic-ch-table .pic-good { font-size: 11px; color: #8fe0ae; margin-top: 2px; }
   .pic-ch-table textarea {
     width: 100%; min-height: 30px; background: var(--surface); color: var(--text); border: 1px solid var(--border);
     border-radius: 4px; padding: 3px 5px; font-size: 11.5px; font-family: var(--font-ui); resize: vertical;
@@ -1482,6 +1484,14 @@
       <div id="picCycleRow" class="pic-cycle-row"><span class="sem-hint">フォルダ読み込み後に表示されます</span></div>
       <div class="pic-num-row"><span>外れ値: 中央値 ± k × MAD換算σ　k =</span><input type="number" id="picDevK" value="3" min="0.5" step="0.5"></div>
       <div class="pic-num-row"><span>サイクル間σ の上限 [mV]</span><input type="number" id="picCycStdMax" value="10" min="0" step="1"></div>
+      <label class="pic-field-label" for="picCondMode" style="margin-top:12px">条件の扱い（色分けの基準）</label>
+      <select id="picCondMode" class="pic-run-select" style="margin-top:0">
+        <option value="auto" selected>自動（STEP1の条件CSVから判定）</option>
+        <option value="same">全ch同一条件：外れ値は高低とも赤</option>
+        <option value="varied">chごとに違う条件：とても低いηを緑</option>
+      </select>
+      <p class="sem-hint" id="picCondModeHint" style="margin-top:6px"></p>
+      <p class="sem-hint">測定不可・欠測・サイクル間のぶれは、どちらのモードでも赤です。</p>
     </div>
 
     <div class="sem-panel">
@@ -5715,6 +5725,7 @@ async function selectRun(dir){
   if(!$('picTitle').value || $('picTitle').value === pic.titleAuto) $('picTitle').value = newTitle;
   pic.titleAuto = newTitle;
   refreshAutoCond();
+  refreshCondModeHint();
   updateGate();
 }
 
@@ -5871,7 +5882,7 @@ function updateGate(){
   setPicStatus(lines.join('\n'));
   picBuildBtn.disabled = !pic.op;
 }
-window.picOnShow = () => { updateGate(); if(pic.op) refreshAutoCond(); };
+window.picOnShow = () => { updateGate(); if(pic.op){ refreshAutoCond(); refreshCondModeHint(); } };
 
 /* ---------------- 判定（make_summary.py と同じロジック） ---------------- */
 function compute(){
@@ -5901,23 +5912,55 @@ function compute(){
   const mad = 1.4826 * median(ok.map(a => Math.abs(a - med)));
   const lo = med - devK * mad, hi = med + devK * mad;
 
+  // 判定モード
+  //   same  : 全ch同一条件。中央値から大きく外れたら（高くても低くても）赤。
+  //   varied: chごとに違う条件（スクリーニング）。中央値よりとても低い＝良い結果なので緑。とても高いものは色を付けない。
+  // どちらのモードでも、測定できなかった・欠測・サイクル間のぶれが大きいものは赤（信頼できないため）。
+  const mode = conditionMode().mode;
   const notes = loadNotes();
   rows.forEach(r => {
-    const rs = [];
+    const rs = [];   // 赤（要注意）の理由
+    let good = '';   // 緑（良好）の理由
     if(r.nValid === 0) rs.push('過電圧算出不可 (j_target 未到達)');
     else if(r.nValid < need) rs.push(`${need - r.nValid}サイクル欠測`);
+    if(NC && r.nValid >= 2 && r.sd > cycMax) rs.push(`サイクル間 σ=${r.sd.toFixed(0)} mV`);
     if(r.nValid > 0 && Number.isFinite(med) && !(r.avg >= lo && r.avg <= hi)){
       const d = r.avg - med;
-      rs.push(`平均が中央値から ${d >= 0 ? '+' : ''}${d.toFixed(0)} mV`);
+      const s = `平均が中央値から ${d >= 0 ? '+' : ''}${d.toFixed(0)} mV`;
+      if(mode === 'same') rs.push(s);
+      else if(d < 0) good = s + '（低い＝良好）';
     }
-    if(NC && r.nValid >= 2 && r.sd > cycMax) rs.push(`サイクル間 σ=${r.sd.toFixed(0)} mV`);
     r.reasons = rs;
     r.flag = rs.length > 0;
+    r.good = !r.flag && !!good; // 赤の理由（測定不良・ぶれ）がある場合は、低くても緑にはしない
+    r.goodReason = good;
     r.note = notes[r.ch] || '';
   });
   const jt = rows.map(r => r.jTarget).find(Number.isFinite);
-  return {rows, cyc, NC, med, mad, lo, hi, devK, cycMax, jTarget: Number.isFinite(jt) ? jt : 1};
+  return {rows, cyc, NC, med, mad, lo, hi, devK, cycMax, mode, jTarget: Number.isFinite(jt) ? jt : 1};
 }
+
+// 条件CSV（STEP1で読み込んだExcel/CSV → 各chの c.data）から、全ch同一条件か、chごとに違う条件かを判定する。
+// 画面の「条件の扱い」で手動指定された場合はそちらを優先。条件データが無い場合は同一条件として扱う。
+function conditionMode(){
+  const sel = $('picCondMode').value;
+  const map = chRectMap();
+  const chs = pic.op ? pic.op.rows.map(r => r.ch) : [];
+  const texts = chs.map(ch => condTextOf(map.get(ch) && map.get(ch).data)).filter(Boolean);
+  const nUniq = new Set(texts).size;
+  const auto = nUniq > 1 ? 'varied' : 'same';
+  const detail = !texts.length ? '条件データなし → 同一条件として判定'
+    : nUniq === 1 ? `全${texts.length}chが同一条件` : `${nUniq}種類の条件（${texts.length}ch）`;
+  return {mode: sel === 'auto' ? auto : sel, auto, detail};
+}
+function refreshCondModeHint(){
+  const {mode, detail} = conditionMode();
+  $('picCondModeHint').innerHTML = `自動判定: ${esc(detail)}<br>現在: <b>${mode === 'same' ? '同一条件モード（外れ値は高低とも赤）' : '条件比較モード（とても低いηは緑、高いものは色なし）'}</b>`;
+}
+
+// 行の表示色。赤（要注意）> 緑（良好）> 通常
+const GREEN = '#2e9e57', GREEN_BG = 'rgba(183,228,199,0.55)';
+function rowColor(r, normal){ return r.flag ? RED : r.good ? GREEN : normal; }
 
 function loadNotes(){
   try { return JSON.parse(lsGet('picNotes:' + pic.runName) || '{}'); } catch(e){ return {}; }
@@ -6020,7 +6063,7 @@ function drawBarChart(ctx, R, x, y, w, h, caption){
     const cx = px + slot * (i + 0.5);
     const has = Number.isFinite(r.avg);
     if(has){
-      ctx.fillStyle = r.flag ? RED : BLUE;
+      ctx.fillStyle = rowColor(r, BLUE);
       ctx.fillRect(cx - bw / 2, Y(r.avg), bw, Y(0) - Y(r.avg));
       if(Number.isFinite(r.sd) && r.sd > 0){
         ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
@@ -6031,7 +6074,7 @@ function drawBarChart(ctx, R, x, y, w, h, caption){
     }
     text(ctx, has ? r.avg.toFixed(0) : 'N/A', cx, (has ? Y(r.avg) : Y(0)) - 4, {size: 10, align: 'center', base: 'bottom', color: '#333'});
     ctx.save(); ctx.translate(cx, py + ph + 6); ctx.rotate(-Math.PI / 2);
-    text(ctx, `Ch${r.ch}`, 0, 0, {size: 11, align: 'right', base: 'middle', color: r.flag ? RED : INK});
+    text(ctx, `Ch${r.ch}`, 0, 0, {size: 11, align: 'right', base: 'middle', color: rowColor(r, INK)});
     ctx.restore();
   });
 }
@@ -6047,7 +6090,7 @@ function viridis(t){
 // processed/debug csv から CV を描く（作業場2の cv_plot と同じ: y=-5..10, j_target線, 採用点）
 function drawCv(ctx, R, r, x, y, w, h, cvImg){
   ctx.fillStyle = '#fff'; ctx.fillRect(x, y, w, h);
-  text(ctx, `Ch${r.ch}${r.com ? ` (${r.com})` : ''}`, x + w / 2, y + 4, {size: 17, weight: 'bold', align: 'center', color: r.flag ? RED : INK});
+  text(ctx, `Ch${r.ch}${r.com ? ` (${r.com})` : ''}`, x + w / 2, y + 4, {size: 17, weight: 'bold', align: 'center', color: rowColor(r, INK)});
   const E = pic.proc && pic.proc.E, J = pic.proc && pic.proc.cols.get(r.sample);
   if(!E || !J){
     y += 26; h -= 26;
@@ -6086,7 +6129,8 @@ function drawCv(ctx, R, r, x, y, w, h, cvImg){
     text(ctx, String(v), px - 6, Y(v), {size: 11, align: 'right', base: 'middle'});
   }
   // ばらつきchは枠を赤く太くする
-  ctx.strokeStyle = r.flag ? RED : '#333'; ctx.lineWidth = r.flag ? 3 : 1; ctx.strokeRect(px, py, pw, ph); ctx.lineWidth = 1;
+  // 要注意chは赤、良好chは緑で枠を太くする
+  ctx.strokeStyle = rowColor(r, '#333'); ctx.lineWidth = (r.flag || r.good) ? 3 : 1; ctx.strokeRect(px, py, pw, ph); ctx.lineWidth = 1;
   text(ctx, 'Potential (V vs. RHE)', px + pw / 2, y + h - 18, {size: 12, align: 'center'});
   ctx.save(); ctx.translate(x + 14, py + ph / 2); ctx.rotate(-Math.PI / 2);
   text(ctx, 'j (mA/cm²)', 0, 0, {size: 12, align: 'center', base: 'middle'}); ctx.restore();
@@ -6127,8 +6171,11 @@ function drawCv(ctx, R, r, x, y, w, h, cvImg){
 function statLine(R){
   if(!Number.isFinite(R.med)) return '正常chがないため中央値を計算できません';
   const used = R.NC ? `η は ${R.cyc.join(', ')} の平均 / ` : '';
-  return `${used}正常ch中央値 ${R.med.toFixed(0)} mV, 許容範囲 ${R.lo.toFixed(0)}–${R.hi.toFixed(0)} mV (中央値±${R.devK}×MAD換算σ)` +
-    (R.NC ? `, サイクル間σ>${R.cycMax} mV も要注意` : '');
+  const range = R.mode === 'varied'
+    ? `${R.lo.toFixed(0)} mV 未満を良好 (中央値−${R.devK}×MAD換算σ)`
+    : `許容範囲 ${R.lo.toFixed(0)}–${R.hi.toFixed(0)} mV (中央値±${R.devK}×MAD換算σ)`;
+  return `${used}中央値 ${R.med.toFixed(0)} mV, ${range}` +
+    (R.NC ? `, 測定不可・欠測・サイクル間σ>${R.cycMax} mV は要注意` : ', 測定不可は要注意');
 }
 function etaLine(R, r){
   return R.NC ? `η: ${r.cycVals.map(fmt).join(' / ')} mV` : `η: ${fmt(r.avg)} mV`;
@@ -6145,7 +6192,7 @@ function renderAll(R, crops, map){
 
   const m = document.createElement('canvas').getContext('2d');
   const condLinesOf = r => perCellCond ? wrapLines(m, condTextOf(map.get(r.ch) && map.get(r.ch).data), CW - 6, `12px ${FONT}`).filter(Boolean) : [];
-  const cellLines = R.rows.map(r => 2 + (r.flag ? r.reasons.length : 0) + condLinesOf(r).length);
+  const cellLines = R.rows.map(r => 2 + (r.flag ? r.reasons.length : 0) + (r.good ? 1 : 0) + condLinesOf(r).length);
   const TXT_LH = 17;
   const TXT_H = Math.max(...cellLines, 2) * TXT_LH + 14;
   const HEAD_H = 26;
@@ -6165,20 +6212,20 @@ function renderAll(R, crops, map){
   y += 44;
   condLines.forEach(l => { text(ctx, l, W / 2, y, {size: 22, align: 'center', color: '#222'}); y += 30; });
   y += 12;
-  drawBarChart(ctx, R, PAD, y, W - PAD * 2, CHART_H, statLine(R) + '  （赤＝ばらつきあり）');
+  drawBarChart(ctx, R, PAD, y, W - PAD * 2, CHART_H, statLine(R) + '  （赤＝要注意' + (R.mode === 'varied' ? '、緑＝ηがとても低い（良好）' : '') + '）');
   y += CHART_H + 20;
 
   R.rows.forEach((r, i) => {
     const gx = PAD + (i % cols) * (CW + GAP);
     const gy = y + Math.floor(i / cols) * ROW_H;
-    const col = r.flag ? RED : INK;
+    const col = rowColor(r, INK);
     text(ctx, `Ch${r.ch}${r.com ? ` (${r.com})` : ''}`, gx + CW / 2, gy, {size: 18, weight: 'bold', align: 'center', color: col});
     drawContain(ctx, crops.get(r.ch), gx, gy + HEAD_H, CW, PH);
-    if(r.flag) strokeBox(ctx, gx, gy + HEAD_H, CW, PH, RED, 4);
+    if(r.flag || r.good) strokeBox(ctx, gx, gy + HEAD_H, CW, PH, col, 4);
     else strokeBox(ctx, gx, gy + HEAD_H, CW, PH, '#333', 1);
     let ty = gy + HEAD_H + PH + 8;
-    const lines = [etaLine(R, r), `平均 ${fmt(r.avg)} ± ${fmt(r.sd)} mV`, ...(r.flag ? r.reasons.map(s => '⚠ ' + s) : [])];
-    lines.forEach(l => { text(ctx, l, gx + CW / 2, ty, {size: 13, align: 'center', color: r.flag ? RED : '#333'}); ty += TXT_LH; });
+    const lines = [etaLine(R, r), `平均 ${fmt(r.avg)} ± ${fmt(r.sd)} mV`, ...(r.flag ? r.reasons.map(s => '⚠ ' + s) : []), ...(r.good ? ['★ ' + r.goodReason] : [])];
+    lines.forEach(l => { text(ctx, l, gx + CW / 2, ty, {size: 13, align: 'center', color: rowColor(r, '#333')}); ty += TXT_LH; });
     condLinesOf(r).forEach(l => { text(ctx, l, gx + CW / 2, ty, {size: 12, align: 'center', color: '#666'}); ty += TXT_LH; });
   });
   return c;
@@ -6199,6 +6246,7 @@ async function renderCvAll(R, crops){
     const ls = [{s: R.NC ? `η: ${R.cyc.map((cn, k) => fmt(r.cycVals[k])).join(' / ')} mV` : `η: ${fmt(r.avg)} mV`},
                 {s: `平均 ${fmt(r.avg)} ± ${fmt(r.sd)} mV`}];
     r.reasons.forEach(s => ls.push({s: '⚠ ' + s}));
+    if(r.good) ls.push({s: '★ ' + r.goodReason});
     if(r.note) wrapLines(m, '所見: ' + r.note, CARD_W, `13px ${FONT}`).slice(0, NOTE_MAX).forEach(s => ls.push({s, note: true}));
     return ls;
   };
@@ -6225,7 +6273,7 @@ async function renderCvAll(R, crops){
   y += 44;
   condLines.forEach(l => { text(ctx, l, W / 2, y, {size: 20, align: 'center', color: '#222'}); y += 28; });
   y += 12;
-  drawBarChart(ctx, R, PAD, y, W - PAD * 2, CHART_H, statLine(R) + '  （赤＝ばらつきあり）');
+  drawBarChart(ctx, R, PAD, y, W - PAD * 2, CHART_H, statLine(R) + '  （赤＝要注意' + (R.mode === 'varied' ? '、緑＝ηがとても低い（良好）' : '') + '）');
   y += CHART_H + 30;
 
   c.rowStarts = []; // PDFでページ分割するときの切れ目（グリッド各行の開始y）
@@ -6237,9 +6285,9 @@ async function renderCvAll(R, crops){
       const r = R.rows[i];
       if(!r) break;
       const x = PAD + k * (CARD_W + GX);
-      const col = r.flag ? RED : '#333';
+      const col = rowColor(r, '#333');
       drawContain(ctx, crops.get(r.ch), x, y + 30, PHW, PLOT_H - 30);
-      strokeBox(ctx, x, y + 30, PHW, PLOT_H - 30, col, r.flag ? 3 : 1);
+      strokeBox(ctx, x, y + 30, PHW, PLOT_H - 30, col, (r.flag || r.good) ? 3 : 1);
       let cvImg = null;
       if(!(pic.proc && pic.proc.cols.get(r.sample)) && pic.cvPngs && pic.cvPngs.get(r.ch)){
         try { cvImg = await loadImg(URL.createObjectURL(pic.cvPngs.get(r.ch))); } catch(e){}
@@ -6247,7 +6295,7 @@ async function renderCvAll(R, crops){
       drawCv(ctx, R, r, x + PHW + 10, y, CVW, PLOT_H, cvImg);
       let ty = y + PLOT_H + 8;
       cardLines[i].forEach(l => {
-        text(ctx, l.s, x + 4, ty, {size: 13, color: r.flag ? RED : (l.note ? '#555' : '#333')});
+        text(ctx, l.s, x + 4, ty, {size: 13, color: rowColor(r, l.note ? '#555' : '#333')});
         ty += LH;
       });
     }
@@ -6259,10 +6307,13 @@ async function renderCvAll(R, crops){
 /* ---------------- サイドバーのch一覧 ---------------- */
 function renderChTable(R){
   const wrap = $('picChTableWrap');
-  const rows = R.rows.slice().sort((a, b) => (b.flag - a.flag) || (a.ch - b.ch));
+  // 赤（要注意）→ 緑（良好）→ その他 の順に並べる
+  const rank = r => r.flag ? 0 : r.good ? 1 : 2;
+  const rows = R.rows.slice().sort((a, b) => (rank(a) - rank(b)) || (a.ch - b.ch));
   wrap.innerHTML = `<table class="pic-ch-table"><thead><tr><th>Ch</th><th>平均±σ</th><th>所見メモ</th></tr></thead><tbody>${
-    rows.map(r => `<tr class="${r.flag ? 'flagged' : ''}"><td>Ch${r.ch}</td><td>${fmt(r.avg)}±${fmt(r.sd)}${
-      r.flag ? `<div class="pic-reason">${r.reasons.map(esc).join('<br>')}</div>` : ''}</td><td><textarea data-ch="${r.ch}" placeholder="${r.flag ? 'CV波形・写真の所見' : ''}">${esc(r.note)}</textarea></td></tr>`).join('')
+    rows.map(r => `<tr class="${r.flag ? 'flagged' : r.good ? 'good' : ''}"><td>Ch${r.ch}</td><td>${fmt(r.avg)}±${fmt(r.sd)}${
+      r.flag ? `<div class="pic-reason">${r.reasons.map(esc).join('<br>')}</div>` : ''}${
+      r.good ? `<div class="pic-good">${esc(r.goodReason)}</div>` : ''}</td><td><textarea data-ch="${r.ch}" placeholder="${(r.flag || r.good) ? 'CV波形・写真の所見' : ''}">${esc(r.note)}</textarea></td></tr>`).join('')
   }</tbody></table>`;
   let timer = null;
   wrap.querySelectorAll('textarea').forEach(t => t.addEventListener('input', () => {
@@ -6277,6 +6328,7 @@ let buildSeq = 0;
 async function build(){
   if(!pic.op) return;
   const seq = ++buildSeq;
+  refreshCondModeHint(); // STEP1の条件データが変わっている可能性があるので判定モードの表示も更新
   const R = compute();
   const map = chRectMap();
   const crops = new Map();
@@ -6290,9 +6342,9 @@ async function build(){
   // テキスト入力中にサイドバー表を作り直すとフォーカスが外れるので、表の中を編集中なら再描画しない
   if(!$('picChTableWrap').contains(document.activeElement)) renderChTable(R);
   picExportAllBtn.disabled = picExportCvBtn.disabled = picExportCsvBtn.disabled = $('picExportPdfBtn').disabled = $('picExportBundleBtn').disabled = false;
-  const nf = R.rows.filter(r => r.flag).length;
+  const nf = R.rows.filter(r => r.flag).length, ng = R.rows.filter(r => r.good).length;
   const nPhoto = R.rows.filter(r => crops.get(r.ch)).length;
-  setPicStatus(`<span class="ok">✓ まとめを生成しました（${esc(pic.runName)}）</span>\n写真 ${nPhoto}/${R.rows.length}ch・ばらつき ${nf}ch` +
+  setPicStatus(`<span class="ok">✓ まとめを生成しました（${esc(pic.runName)}）</span>\n写真 ${nPhoto}/${R.rows.length}ch・要注意(赤) ${nf}ch` + (R.mode === 'varied' ? `・良好(緑) ${ng}ch` : '') +
     (Number.isFinite(R.med) ? `・中央値 ${R.med.toFixed(0)} mV` : ''));
 }
 
@@ -6368,9 +6420,11 @@ function buildCsvBlob(){
   if(!R) return null;
   const q = s => /[",\n]/.test(s) ? `"${String(s).replace(/"/g, '""')}"` : s;
   const r1 = v => Number.isFinite(v) ? (Math.round(v * 10) / 10).toString() : '';
-  const head = ['Ch', 'COM', ...R.cyc, 'avg', 'sd', 'flag', 'reason', 'note'];
+  // flag=赤（要注意）, good=緑（条件比較モードでηがとても低い）
+  const head = ['Ch', 'COM', ...R.cyc, 'avg', 'sd', 'flag', 'good', 'reason', 'note'];
   const lines = [head.join(',')].concat(R.rows.map(r => [
-    r.ch, r.com, ...r.cycVals.map(r1), r1(r.avg), r1(r.sd), r.flag ? 'True' : 'False', q(r.reasons.join(' / ')), q(r.note)
+    r.ch, r.com, ...r.cycVals.map(r1), r1(r.avg), r1(r.sd), r.flag ? 'True' : 'False', r.good ? 'True' : 'False',
+    q([...r.reasons, ...(r.good ? [r.goodReason] : [])].join(' / ')), q(r.note)
   ].join(',')));
   return new Blob(['﻿' + lines.join('\r\n') + '\r\n'], {type: 'text/csv'});
 }
@@ -6426,6 +6480,7 @@ $('picExportBundleBtn').addEventListener('click', exportBundle);
 $('picViewAllBtn').addEventListener('click', () => showView('all'));
 $('picViewCvBtn').addEventListener('click', () => showView('cv'));
 $('picCondPerCell').addEventListener('change', e => { e.target.dataset.touched = '1'; });
+$('picCondMode').addEventListener('change', () => { if(pic.op) refreshCondModeHint(); if(pic.result) build(); });
 ['picDevK', 'picCycStdMax', 'picCols', 'picPad', 'picZoom', 'picCondPerCell'].forEach(id =>
   $(id).addEventListener('change', () => { if(pic.result) build(); }));
 let txtTimer = null;
