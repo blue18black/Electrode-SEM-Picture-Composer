@@ -1509,6 +1509,13 @@
       <div class="pic-num-row"><span>1行あたりのch数</span><input type="number" id="picCols" value="8" min="1" max="16"></div>
       <div class="pic-num-row"><span>写真の余白 [%]</span><input type="number" id="picPad" value="6" min="0" max="50"></div>
       <label class="pic-check"><input type="checkbox" id="picZoom"> 写真を○部分（作用極）にズーム</label>
+      <div class="pic-num-row"><span>出力解像度</span>
+        <select id="picScale" class="pic-run-select" style="width:auto;margin-top:0">
+          <option value="1">標準（1倍・軽い）</option>
+          <option value="2" selected>高（2倍）</option>
+          <option value="3">最高（3倍・重い）</option>
+        </select>
+      </div>
     </div>
 
     <div class="sem-panel">
@@ -5987,6 +5994,18 @@ function cropCanvas(rect){
 }
 
 /* ---------------- 描画ヘルパ ---------------- */
+// まとめ画像のキャンバスを作る。レイアウトは論理座標（W×H）のまま描き、実際のピクセル数だけ
+// 「出力解像度」倍にする（ctx.scale）。写真は元画像から直接高解像度で描かれ、文字もくっきりする。
+// ブラウザのキャンバス上限（1辺32767px・面積およそ2.6億px）を超えないよう、必要なら倍率を下げる。
+function makePageCanvas(W, H){
+  let s = parseFloat($('picScale').value) || 2;
+  while(s > 1 && (W * s > 32000 || H * s > 32000 || W * H * s * s > 200e6)) s -= 0.5;
+  const c = document.createElement('canvas');
+  c.width = Math.round(W * s); c.height = Math.round(H * s);
+  c.pageScale = s;
+  c.getContext('2d').scale(s, s);
+  return c;
+}
 function drawContain(ctx, img, x, y, w, h){
   ctx.fillStyle = '#fff'; ctx.fillRect(x, y, w, h);
   if(!img){
@@ -6203,8 +6222,7 @@ function renderAll(R, crops, map){
   const ROW_H = HEAD_H + PH + TXT_H + 18;
   const H = PAD + TITLE_H + CHART_H + 20 + nRows * ROW_H + PAD;
 
-  const c = document.createElement('canvas');
-  c.width = W; c.height = H;
+  const c = makePageCanvas(W, H);
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
   let y = PAD;
@@ -6263,8 +6281,7 @@ async function renderCvAll(R, crops){
   const CHART_H = 360;
   const H = PAD + TITLE_H + CHART_H + 30 + rowH.reduce((a, b) => a + b + GY, 0) + PAD;
 
-  const c = document.createElement('canvas');
-  c.width = W; c.height = H;
+  const c = makePageCanvas(W, H);
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
   let y = PAD;
@@ -6370,12 +6387,15 @@ function exportPng(which){
   if(!c) return;
   c.toBlob(b => download(b, `summary_${which}_${pic.runName}.png`), 'image/png');
 }
+// y0, y1 はレイアウト上の座標（解像度倍率を掛ける前）
 function sliceCanvas(src, y0, y1){
+  const s = src.pageScale || 1;
   const c = document.createElement('canvas');
-  c.width = src.width; c.height = Math.max(1, Math.round(y1 - y0));
+  c.pageScale = s;
+  c.width = src.width; c.height = Math.max(1, Math.round((y1 - y0) * s));
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-  ctx.drawImage(src, 0, y0, src.width, c.height, 0, 0, c.width, c.height);
+  ctx.drawImage(src, 0, Math.round(y0 * s), src.width, c.height, 0, 0, c.width, c.height);
   return c;
 }
 // PDFのページ構成。全chまとめは1ページ。CV図は1ページ目=棒グラフ+グリッド2行、以降3行ずつ。
@@ -6387,7 +6407,7 @@ function pdfPagesOf(which){
   const starts = c.rowStarts || [];
   if(!starts.length) return [c];
   const firstN = Math.min(2, starts.length), perPage = 3;
-  const cut = i => i < starts.length ? starts[i] : c.height;
+  const cut = i => i < starts.length ? starts[i] : c.height / (c.pageScale || 1); // レイアウト座標
   const pages = [sliceCanvas(c, 0, cut(firstN))];
   for(let i = firstN; i < starts.length; i += perPage) pages.push(sliceCanvas(c, cut(i), cut(i + perPage)));
   return pages;
@@ -6403,11 +6423,13 @@ function buildPdf(pages){
   const PT = 0.75; // 96dpi px -> pt
   let pdf = null;
   for(const pg of pages){
-    const w = pg.width * PT, h = pg.height * PT;
+    // 用紙サイズはレイアウト上の大きさで決め、画像は高解像度のまま貼る（倍率を上げても用紙は大きくならない）
+    const s = pg.pageScale || 1;
+    const w = pg.width / s * PT, h = pg.height / s * PT;
     const orient = w > h ? 'l' : 'p';
     if(!pdf) pdf = new window.jspdf.jsPDF({orientation: orient, unit: 'pt', format: [w, h], compress: true});
     else pdf.addPage([w, h], orient);
-    pdf.addImage(pg.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, w, h);
+    pdf.addImage(pg.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, w, h);
   }
   return pdf;
 }
@@ -6481,7 +6503,7 @@ $('picViewAllBtn').addEventListener('click', () => showView('all'));
 $('picViewCvBtn').addEventListener('click', () => showView('cv'));
 $('picCondPerCell').addEventListener('change', e => { e.target.dataset.touched = '1'; });
 $('picCondMode').addEventListener('change', () => { if(pic.op) refreshCondModeHint(); if(pic.result) build(); });
-['picDevK', 'picCycStdMax', 'picCols', 'picPad', 'picZoom', 'picCondPerCell'].forEach(id =>
+['picDevK', 'picCycStdMax', 'picCols', 'picPad', 'picZoom', 'picCondPerCell', 'picScale'].forEach(id =>
   $(id).addEventListener('change', () => { if(pic.result) build(); }));
 let txtTimer = null;
 ['picTitle', 'picCond'].forEach(id => $(id).addEventListener('input', () => {
